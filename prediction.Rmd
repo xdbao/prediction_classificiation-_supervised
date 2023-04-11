@@ -1,0 +1,1295 @@
+---
+title: "Cycling Accidents in London"
+output: html_document
+date: '2023-03-27'
+---
+
+# Cycling Accidents in London
+
+```{r}
+library(tidymodels)  # for rsample, recipes, parsnip, tune, yardstick and dials packages
+library(tidyverse) # for readr package
+library(rpart.plot)  # to visualize a decision tree
+```
+
+Read *london_cycling_accident_dataset.csv* into R using `read_csv()` function from `readr` package.
+
+The data set consists of London cycling accident data from 2017 to 2020, with 19,311 rows and 22 columns. The 22 variables are as follows: 
+
+1.  accident_year: year of the incident that happened
+
+2.  number_of_vehicles: the number of vehicles involved in this incident
+
+3.  number_of_casualties: the number of casualties involved in this incident
+
+4.  day_of_week: 1- Sunday, 2-Monday, 3-Tuesday, 4-Wednesday, 5-Thursday, 6-Friday, 7- Saturday
+
+5.  road_type: 1-Roundabout, 2-One way street, 3-Dual carriageway, 6-Single carriageway, 7-Slip road, 9-Unknown,12-One way street/Slip road, -1-Data missing or out of range
+
+6.  speed_limit: the speed limit on the road, but when the value is -1, meaning Data missing or out of range; 99 means unknown (self-reported)
+
+7.  light_conditions: the light conditions when the incident happened. 1-Daylight, 4-Darkness - lights lit, 5-Darkness - lights unlit, 6-Darkness - no lighting, 7-Darkness - lighting unknown, -1-Data missing or out of range
+
+8.  weather_conditions: the weather conditions when the incident happened. 1-Fine no high winds, 2-Raining no high winds, 3-Snowing no high winds, 4-Fine + high winds, 5-Raining + high winds, 6-Snowing + high winds, 7-Fog or mist, 8-Other, 9-Unknown, -1-Data missing or out of range
+
+9.  road_surface_conditions: the road surface conditions when the incident happened. 1-Dry, 2-Wet or damp, 3-Snow, 4-Frost or ice, 5-Flood over 3cm. deep, 6-Oil or diesel, 7-Mud, -1-Data missing or out of range, 9-unknown (self-reported)
+
+10. urban_or_rural_area: the location of the incident. 1-Urban, 2-Rural,3-Unallocated, -1- Data missing or out of range.
+
+11. daytime: four-time period intra-day
+
+12. month: twelve-month information
+
+13. season: four-season information
+
+14. IMD_Decile: Index of Multiple Deprivation Decile, where 1 means the most deprived and 10 represents the least deprived. This is an overall measure of multiple deprivations experienced by people living in an area and is calculated for every Lower layer Super Output Area (LSOA) in England
+
+15. IncScore: Income Score (rate)
+
+16. EmpScore: Employment Score (rate)
+
+17. HDDScore: Health Deprivation and Disability Score
+
+18. EduScore: Education, Skills and Training Score
+
+19. CriScore: Crime Score
+
+20. EnvScore:Living Environment Score
+
+21. accident_severity: 1-Slight 2-Serious, 3-Fatal
+
+22. is_grave_accident: "No" if `accident_severity == 1`, "Yes" otherwise
+
+```{r}
+data <- readr::read_csv("./london_cycling_accident_dataset.csv", show_col_types = FALSE)
+data %>% head()
+
+print(unique(data$accident_year) %>% sort())
+print(dim(data))
+```
+
+**19 variables in data set are available to be used as predictors**, excluding `accident_year` , `accident_severity` and `number_of_casualities`. `accident_year` is excluded as prediction of `is_grave_accident` by extrapolation is not sensible i.e. predicting `is_grave_accident` for a value of `accident_year` outside the range of 2017 to 2021. For classification problem, `accident_severity` is excluded as a predictor which is for regression problem. `number_casualities` is removed as it would not be truly known when a passer-by reports an accident.
+
+```{r}
+data <- data %>% 
+  select(-c(accident_year,accident_severity,number_of_casualties)) 
+```
+
+The outcome variable, `is_grave_accident` (yes or no) is chosen as the outcome variable for supervised learning(SL): classification as it could be predicted by the predictor variables in the data set which depict environmental factors, regulations, education background and socio-economic status. Ensure the outcome variable, `is_grave_accident` and categorical variables are converted to factors.
+
+```{r}
+ncol <- ncol(data) -7 # do not select the last 7 columns to be converted to factors
+data[, 3:ncol] <- lapply(data[, 3:ncol], factor) # convert categorical variables to factors
+data$is_grave_accident <- as.factor(data$is_grave_accident) # convert outcome variable to factor
+data %>% head()
+```
+
+The data set is imbalanced where there are approximate 82.6 % No and 17.4 % Yes for the outcome variable, `is_grave_accident`.
+
+```{r}
+data %>% 
+  count(is_grave_accident) %>% 
+  mutate(prop = n/sum(n))
+```
+
+### Data Splitting
+
+`initial_split()` function from `rsample` package takes the data set, `data` and retains info on how to perform split based on the arguments: prop and strata. As prop = 0.8, 80% of the data is randomly sampled for `data_train` and 20% for `data_test` . As value for strata is `is_grave_accident`, training and test data will retain 82.6% No and 17.4% Yes for `is_grave_accident` via stratified sampling.The randomly sampled train and test data are reproducible by setting the seed with a random number, 123. The training data is used to estimate parameters and tune hyperparameters of the models. The testing data is for assessing the performances of final models.
+
+```{r}
+set.seed(123) 
+
+data_split <- initial_split(data, prop = 0.8, strata = is_grave_accident)
+data_train <- training(data_split)
+data_test  <- testing(data_split)
+```
+
+Training data consists of 15,448 rows and 19 columns. Testing data has 3,863 rows and 19 columns.
+
+```{r}
+dim(data_train)
+dim(data_test)
+```
+
+The training data has 82.6 % No and 17.4 % Yes for the outcome variable, `is_grave_accident`.
+
+```{r}
+data_train %>% 
+  count(is_grave_accident) %>% 
+  mutate(prop = n/sum(n))
+```
+
+The testing data has 82.6 % No and 17.4 % Yes for the outcome variable, `is_grave_accident`. Stratified sampling is chosen with the assumption that in future, the proportion of Yes and No for `is_grave_accident` would be roughly the same as the past data.
+
+```{r}
+data_test %>% 
+  count(is_grave_accident) %>% 
+  mutate(prop = n/sum(n))
+```
+
+### Resampling (Cross-Validation)
+
+Resampling method: 10-fold cross-validation (CV) is performed on the training data using `vfold_cv()` where v = 10. Each roughly equally divided fold is 1,544 rows of data, computed by dividing the rows of training data: 15,448 with number of folds: 10. For 1st iteration of resampling, 9 folds of data randomly sampled for training and the remaining 1 fold of data is reserved to generate predictions for performance measurement, like a validation set. At the end, 10 iterations of resampling would be performed, resulting in 10 validation sets for 10 performances metrics: 10 accuracies and 10 Areas Under the Receiver Operating Characteristic (ROC) Curve (AUC-ROC Curve). Accuracy and AUC-ROC Curve can be computed with the `yardstick` package.
+
+The accuracy of the baseline classifier would be maximized at 82.6 % with the highest threshold of 1, i.e. all predicted elements are classified as No for `is_grave_accident` as there are 82.6 % of No for `is_grave_accident` in the data set. This classifier is not useful to distinguish class of Yes or No for `is_grave_accident` despite having high accuracy. However, this performance metric is chosen to tune models for the competition which awards based on the highest accuracy.
+
+### $accuracy = \frac{number\ of\ correct\ predictions}{total\ numer\ of\ predictions} = \frac{TP\ + TN}{TP\ + FP\ + TN\  + FN}$
+
+The AUC-ROC which plot the true positives rate (sensitivity) against the false positives rates (1- specificity) for different thresholds. AUC-ROC would be able to provide a better understanding of the model performance to distinguish Yes or No of `is_grave_accident` for the case when majority of the accidents is No for `is_grave_accident`. A model with higher AUC increases effectiveness of resource allocation. For instance, more emergency services would be allocated where the gravity of accident is predicted as Yes. As a result, emergency services are more readily available to save more lives. The tuning of model based on AUC-ROC is done separately as it is not for competition but application of resource allocation.
+
+### $sensitivity = true\ positive\ rate = \frac{TP}{TP\ + FN}$
+
+### $specificity = \frac{TN}{TN\ + FP}$
+
+### $false\ positive\ rate = \frac{FP}{FP\ + TN}$
+
+TP: True Positives
+
+TN: True Negatives
+
+FP: False Positives
+
+FN: False Negatives
+
+```{r}
+set.seed(345)
+folds <- vfold_cv(data_train, v = 10)
+```
+
+### Preprocess data with recipes
+
+A preprocessing recipe, `rec` is created with `recipe()` function from `recipes` package to preprocess the training data. `rec` is the recipe for logistic regression, gradient descent in logistic regression and penalized logistic regression.`recipe()` function takes the formula in the form of outcome variable \~ . The "." dot here depicts all predictor variables. All nominal variables would be converted into dummy variables with `step_dummy()` function. Variables which are factors are considered to be nominal variables. `step_zv()` removes columns with 0 variance. `step_normalize()` function centers and scales all numeric data.
+
+```{r}
+rec <- recipe(is_grave_accident~., data = data_train) %>%
+                 step_dummy(all_nominal_predictors()) %>%
+                 step_zv(all_predictors()) %>%
+                 step_normalize(all_numeric_predictors())  
+```
+
+`rec_tree` is the recipe for tree-based models such as decision tree, random forest, eXtreme gradient boosting as the models do not require dummy or normalized predictor variables.
+
+```{r}
+rec_tree <- recipe(is_grave_accident~., data = data_train)  
+```
+
+Models are specified and train with different engines and modes with the `parsnip` package.
+
+The models that would be explored are as follows:
+
+1.  logistic regression model: baseline model
+2.  gradient descent in logistic regression
+3.  penalized logistic regression model
+4.  decision tree: interpretable model
+5.  random forest: high dimensional model
+6.  eXtreme Gradient Boosting: high dimensional model
+
+### Build a Logistic Regression Model
+
+Build the model, logistic regression, `lr` by specifying the model: `logistic_reg()` and the method for fitting or training the model: set_engine("glm") ,which fits a generalized linear model for binary outcomes. The engine is set to be classification mode.
+
+```{r}
+lr <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification") 
+```
+
+### Pair Logistic Regression Model with a Recipe
+
+The logistic regression model is paired with recipe, `rec` with the `workflows` package and called the logistic regression workflow, `lr_wf`.
+
+```{r}
+lr_wf <-
+  workflow() %>%
+  add_model(lr) %>%
+  add_recipe(rec) 
+```
+
+### Use Trained Logistic Regression Workflow to Predict
+
+`fit_resamples()` computes performance metrics: AUC-ROC Curves across 10 folds fitted by fitting the trained logistic regression workflow. Save predictions from the validation set via `control_grid()` function.
+
+```{r}
+lr_res_auc <- lr_wf %>% 
+              fit_resamples(resamples = folds,
+                            control = control_grid(save_pred = TRUE),
+                            metrics = metric_set(roc_auc))
+```
+
+`fit_resamples()` computes performance metrics: accuracy across 10 folds fitted by fitting the trained logistic regression workflow. Save predictions from the validation set via `control_grid()` function.
+
+```{r}
+lr_res_acc <- lr_wf %>% 
+  fit_resamples(resamples = folds,
+                control = control_grid(save_pred = TRUE),
+                metrics = metric_set(accuracy))
+```
+
+### Performance Estimation for Training Data
+
+The final performance metrics: AUC-ROC for the logistic regression are the **averages** of the 10 performance metrics: AUC-ROC Curves over 10 folds fitted, which is 56.2%.
+
+```{r}
+lr_best_auc <- 
+  lr_res_auc %>%
+  collect_metrics()
+lr_best_auc
+```
+
+Compute predicted class probabilities for `No` and `Yes` with `collect_predictions()` function. Then, create ROC curve using `roc_curve()` . Create a column, `model` with value "Logistic Regression". Plot the ROC Curve with `autoplot()` function.
+
+```{r}
+lr_plot_auc <- 
+  lr_res_auc %>% 
+  collect_predictions() %>% 
+  roc_curve(is_grave_accident, .pred_No) %>% 
+  mutate(model = "Logistic Regression")
+autoplot(lr_plot_auc)
+```
+
+The final performance metrics: accuracy for the logistic regression are the **averages** of the 10 performance metrics: accuracy over 10 folds fitted, which is 82.5%.
+
+```{r}
+lr_best_acc <-
+  lr_res_acc %>% 
+  collect_metrics()
+lr_best_acc
+```
+
+### Build a Gradient Descent in Logistic Regression Model
+
+Create design matrices for training and testing data
+
+```{r}
+x_train <- model.matrix(is_grave_accident ~. , data=data_train)
+y_train <- ifelse(data_train["is_grave_accident"]=="Yes",1,0)
+
+x_test <- model.matrix(is_grave_accident ~. , data=data_test)
+y_test <- ifelse(data_test["is_grave_accident"]=="Yes",1,0)
+```
+
+Define the Loss Function of Logistic Regression
+
+### $L = Loss(\sigma(z), y) = - ylog(\sigma(z)) - (1-y)log(1-\sigma(z))$
+
+where y = 0 or 1, and
+
+### $\sigma(z)$ $= \frac{1}{1+e^{-z}}$ $, z= Xw + b$
+
+For simplicity, set bias, b = 0. Identify how loss changes with respect to weight, w by computing the gradient as shown as below:
+
+### $\frac{\partial L}{\partial w}= X(\sigma(z)-y)$
+
+Find the optimal weight that minimize the loss function of logistic regression using gradient descent algorithm, which is updating the weight, w with the by subtracting original weight, w with multiplication of learning rate, $\alpha$ = 0.01 and gradient for iteration of 1,000 to ensure the loss is decreasing.
+
+```{r}
+# Define the sigmoid function
+sigmoid <- function(z) {
+  1 / (1 + exp(-z))
+}
+
+# Define gradient descent function
+gradient_descent <- function(X, y, alpha, iterations) {
+  
+  # Initialize parameters
+  weight <- matrix(0, ncol(X), 1)
+
+  # Gradient descent algorithm
+  for (i in 1:iterations) {
+    h <- sigmoid(X %*% weight)
+    gradient <-  t(X) %*% (h-y)
+    weight <- weight - alpha * gradient
+  }
+  
+  # Estimate the parameters for logisitic regression using gradient descent
+  return(weight)
+}
+
+# Find the optimal weight
+alpha <- 0.01
+iterations <- 1000
+weight <- gradient_descent(x_train, y_train, alpha, iterations)
+```
+
+Make predictions on training data
+
+```{r}
+lr_gd_res <- sigmoid(x_train %*% weight)
+```
+
+Convert matrix to vector
+
+```{r}
+lr_gd_res <- c(lr_gd_res)
+```
+
+Evaluate accuracy of predictions
+
+```{r}
+lr_gd_best_acc <- mean(round(lr_gd_res) == y_train)
+lr_gd_best_acc
+```
+
+### Build a Penalized Logistic Regression Model
+
+Build the model, penalized logistic regression, `plr` by specifying the model: `logistic_reg(penalty = tune(), mixture = ())` . Penalty is indicated by $\lambda$ and mixture is represented by $\alpha$ in the equation below.
+
+If $\alpha$ = 1 , then it is lasso regression
+
+If $\alpha$ = 0 , then it is a ridge regression
+
+If 0 \< $\alpha$ \< 1, then it is an elastic net regression.
+
+### $RSS + \lambda \Bigl( (1-\alpha) \sum_{i=1}^{p} \beta_j ^2 + \alpha\sum_{i=1}^{p}|\beta_j| \Bigl)$
+
+The hyperparameters, penalty, $\lambda$ and mixture, $\alpha$ would be tuned for the best prediction using training data.The method for fitting or training the model is set_engine("glmnet") ,which fits a regularized generalized linear model. The engine is set to be classification mode.
+
+```{r}
+plr <- 
+  logistic_reg(penalty = tune(), mixture = tune()) %>% 
+  set_engine("glmnet") %>%
+  set_mode("classification")
+```
+
+### Pair Penalized Logistic Regression Model with a Recipe
+
+The penalized logistic regression model is then paired with recipe, `rec` with the `workflows` package and called the penalized logistic regression workflow, `plr_wf`.
+
+```{r}
+plr_wf <- 
+  workflow() %>% 
+  add_model(plr) %>% 
+  add_recipe(rec) 
+```
+
+### Model Tuning with a Grid
+
+Create a regular grid of values using `grid_regular()` from the `dials` package. By setting levels = 10, 10 sensible penalty values for each 10 values of mixture range from 0 to 1 are returned. As a results, there are 10x10 = 100 tuning combinations to try.
+
+```{r}
+plr_grid <- grid_regular(penalty(),
+                         mixture(),
+                         levels = 10)
+plr_grid
+```
+
+Use `tune_grid()` from `tune` package to train the 100 penalized logistic regressions models. Save predictions from the validation set via `control_grid()` function. The chosen performance metric is AUC-ROC.
+
+```{r}
+plr_res_auc <- 
+  plr_wf %>% 
+  tune_grid(resamples = folds,
+            grid = plr_grid,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(roc_auc))
+```
+
+Plot the AUC of validation set against the penalty values. The model performs better when the penalty value is small, implying most of the predictors are important in predicting the outcome variable. A large penalty removes most predictors from the model, resulting in decreasing in AUC to 0.5, which is as worse as making the correct prediction by chance.
+
+```{r}
+plr_res_auc %>% 
+  collect_metrics() %>% 
+  ggplot(aes(x = penalty, y = mean)) + 
+  geom_point() + 
+  geom_line() + 
+  ylab("Area under the ROC Curve") +
+  scale_x_log10(labels = scales::label_number())
+```
+
+Use `tune_grid()` from `tune` package to train the 100 penalized logistic regressions models. Save predictions from the validation set via `control_grid()` function. The chosen performance metric is accuracy.
+
+```{r}
+plr_res_acc <- 
+  plr_wf %>% 
+  tune_grid(resamples = folds,
+            grid = plr_grid,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(accuracy))
+```
+
+Plot the accuracy of validation set against the penalty values. The model performs better when the penalty value is large, implying most of the predictors are not important in predicting the outcome variable. A large penalty removes most predictors from the model, resulting in increase and plateau in AUC at 82.6%, which is equivalent to the proportion of No , 82.6% for the outcome variable, `is_grave_accident`. The model might only make prediction of No without any predictors, which is not useful to distinguish classes of Yes and No.
+
+```{r}
+plr_res_acc %>% 
+  collect_metrics() %>% 
+  ggplot(aes(x = penalty, y = mean)) + 
+  geom_point() + 
+  geom_line() + 
+  ylab("Accuracy") +
+  scale_x_log10(labels = scales::label_number())
+```
+
+### Performance Estimation for Training Data
+
+The [`show_best()`](https://tune.tidymodels.org/reference/show_best.html) function shows us the top 10 models based on the AUC from validation sets.
+
+```{r}
+plr_top_auc <-
+  plr_res_auc %>% 
+  show_best("roc_auc", n = 10) 
+plr_top_auc
+```
+
+Use `select_best()` function to extract values for `penalty` and `mixture` that maximize AUC-ROC of the validation sets.
+
+```{r}
+plr_best_auc <- 
+  plr_res_auc  %>% 
+  select_best("roc_auc")
+plr_best_auc
+```
+
+Compute predicted class probabilities for `No` and `Yes` with `collect_predictions()` function. .Filter prediction for best penalized logistic regression model.Then, create ROC curve using `roc_curve()` . Create a column, `model` with value "Penalized Logistic Regression". Plot the ROC Curve with `autoplot()` function.
+
+```{r}
+plr_plot_auc <- 
+  plr_res_auc %>% 
+  collect_predictions(parameters = plr_best_auc) %>% 
+  roc_curve(is_grave_accident, .pred_No) %>% 
+  mutate(model = "Penalized Logistic Regression")
+autoplot(plr_plot_auc)
+
+```
+
+The [`show_best()`](https://tune.tidymodels.org/reference/show_best.html) function shows us the top 20 models based on the accuracy from validation sets.
+
+```{r}
+plr_top_acc <-
+  plr_res_acc %>% 
+  show_best("accuracy", n = 100) 
+plr_top_acc
+```
+
+Use `select_best()` function to extract values for `penalty` and`mixture` that maximize accuracy of the validation sets.
+
+```{r}
+plr_best_acc <- 
+  plr_res_acc %>% 
+  select_best("accuracy")
+plr_best_acc
+```
+
+### Build a Decision Tree Model
+
+Build the model, decision tree, `dt` by specifying the model: `decision_tree(cost_complexity = tune(), tree_depth = ())` . The hyperparameters, cost_complexity and tree_depth would be tuned for the best prediction using training data. A high value of `cost_complexity` adds a higher cost or penalty to error rates, resulting in higher number of tree nodes being pruned. A lower value of `cost_complexity` would adds a lower cost or penalty to error rates, resulting in lower number of tree nodes being pruned. Higher number of tree nodes being pruned might result in underfitting whereas lower number of tree nodes being pruned might result in overfitting. By tuning the `tree_depth`, trees can be stopped from growing after certain level of depth. The method for fitting or training the model is set_engine("rpart") ,which fits a model that crates a tree-based models with a set of if/then statements. The engine is set to be classification mode.
+
+```{r}
+dt <-
+  decision_tree(
+    cost_complexity =tune(),
+    tree_depth = tune(),
+  ) %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+```
+
+### Fit Decision Tree Model with a Recipe
+
+The decision tree model is then paired with recipe, `rec_tree` with the `workflows` package and called the decision tree workflow, `dt_wf`.
+
+```{r}
+dt_wf <- 
+  workflow() %>% 
+  add_model(dt) %>% 
+  add_recipe(rec_tree) 
+```
+
+### Model Tuning with a Grid
+
+Create a regular grid of values using `grid_regular()` from the `dials` package. By setting levels = 5, 5 cost complexity for each 5 values of cost_complexity ranging to 0.1 are generated, As a results, there are 5x5= 25 tuning combinations to try.
+
+```{r}
+dt_grid <- grid_regular(cost_complexity(),
+                        tree_depth(),
+                        levels = 5)
+dt_grid 
+```
+
+Use `tune_grid()` from `tune` package to train the 25 decision trees models. Save predictions from the validation set via `control_grid()` function. The chosen performance metric is AUC-ROC.
+
+```{r}
+dt_res_auc <- 
+  dt_wf %>% 
+  tune_grid(resamples = folds,
+            grid = dt_grid,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(roc_auc))
+
+```
+
+Based on AUC-ROC, tree with depth of 1 is the worst model whereas the best model is the model with tree depth of 11. However, model with tree depth of 4 has similar performance to tree depth of 11. For interpretability, model with tree depth of 4 is preferred.
+
+```{r}
+dt_res_auc %>% 
+  collect_metrics() %>%
+  mutate(tree_depth = factor(tree_depth)) %>%
+  ggplot(aes(cost_complexity, mean, color = tree_depth)) +
+  geom_line(linewidth = 1.5, alpha = 0.6) +
+  geom_point(size = 2) +
+  facet_wrap(~ .metric, scales = "free", nrow = 2) +
+  scale_x_log10(labels = scales::label_number()) +
+  scale_color_viridis_d(option = "plasma", begin = .9, end = 0)
+```
+
+Use `tune_grid()` from `tune` package to train the 25 decision trees models. Save predictions from the validation set via `control_grid()` function. The chosen performance metric is accuracy.
+
+```{r}
+dt_res_acc <- 
+  dt_wf %>% 
+  tune_grid(resamples = folds,
+            grid = dt_grid,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(accuracy))
+```
+
+Based on accuracy, tree with depth of 1 is the best model whereas the worst model is the model with tree depth of 15, implying predicting with no predictors generates the best performance in term of accuracy.
+
+```{r}
+dt_res_acc %>% 
+  collect_metrics() %>%
+  mutate(tree_depth = factor(tree_depth)) %>%
+  ggplot(aes(cost_complexity, mean, color = tree_depth)) +
+  geom_line(linewidth = 1.5, alpha = 0.6) +
+  geom_point(size = 2) +
+  facet_wrap(~ .metric, scales = "free", nrow = 2) +
+  scale_x_log10(labels = scales::label_number()) +
+  scale_color_viridis_d(option = "plasma", begin = .9, end = 0)
+```
+
+### Performance Estimation for Training Data
+
+The [`show_best()`](https://tune.tidymodels.org/reference/show_best.html) function shows us the top 20 models based on the AUC-ROC from validation sets. Only select `tree_depth` == 4.
+
+```{r}
+dt_top_auc <-
+  dt_res_auc %>% 
+  show_best("roc_auc", n = 20) %>%
+  filter(tree_depth == 4)
+dt_top_auc
+```
+
+A model with higher cost complexity is preferred for a simpler model without sacrificing the performance in term of AUC.
+
+```{r}
+dt_best_auc <- 
+  dt_top_auc %>%
+  slice(3)
+dt_best_auc
+```
+
+Compute predicted class probabilities for `No` and `Yes` with `collect_predictions()` function.Filter prediction for best decision tree model. Then, create ROC curve using `roc_curve()` . Create a column, `model` with value "Decision Tree". Plot the ROC Curve with `autoplot()` function.
+
+```{r}
+dt_plot_auc <- 
+  dt_res_auc %>% 
+  collect_predictions(parameters = dt_best_auc) %>% 
+  roc_curve(is_grave_accident, .pred_No) %>% 
+  mutate(model = "Decision Tree")
+autoplot(dt_plot_auc)
+```
+
+The [`show_best()`](https://tune.tidymodels.org/reference/show_best.html) function shows us the top 10 models based on the accuracy from validation sets.
+
+```{r}
+dt_top_acc <-
+  dt_res_acc %>% 
+  show_best("accuracy", n = 10) 
+dt_top_acc
+```
+
+Use `select_best()` function to extract values for `cost_complexity` and `tree_depth` that maximize accuracy of the validation sets.
+
+```{r}
+dt_best_acc <- 
+  dt_res_acc %>% 
+  select_best("accuracy") 
+dt_best_acc
+```
+
+### Build a Random Forest Model
+
+Build the model, random forest, `rf` by specifying the model: `rand_forest(mtry = tune(), trees = 100, min_n = tune())` . The hyperparameters, `m_try` and `min_n` would be tuned for the best prediction using training data. A single decision tree is highly sensitive to the changes in data. Random forest is less sensitive to changes as it is a collection of different decision trees called tree ensemble where each decision trees is trained on different subsets of training data. Each decision tree is different as each decision tree in random forest consists of only a subset of total features indicated by the value of `mtry`. The argument, `min_n` determines if the node should be further split based on the minimum number of data points in a node. The method for fitting or training the model is set_engine("ranger") , which fits a model that creates a collection of independent decision trees. The engine is set to be classification mode.
+
+```{r}
+doParallel::registerDoParallel()
+
+rf <- 
+  rand_forest(mtry = tune(),
+              trees = 100,
+              min_n = tune()) %>% 
+  set_engine("ranger") %>%
+  set_mode("classification")
+
+```
+
+### Fit Random Forest Model with a Recipe
+
+The random forest model is then paired with recipe, `rec_tree` with the `workflows` package and called the random forest workflow, `rf_wf`.
+
+```{r}
+rf_wf <- 
+  workflow() %>% 
+  add_model(rf) %>% 
+  add_recipe(rec_tree) 
+```
+
+### Model Tuning with a Grid
+
+Set grid = 20 to automatically choose 20 grid points for tuning. Save predictions from the validation set via `control_grid()` function. The chosen performance metric is AUC-ROC.
+
+```{r}
+rf_res_auc <- 
+  rf_wf %>% 
+  tune_grid(resamples = folds,
+            grid = 20,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(roc_auc))
+```
+
+It seems like values between 15 and 35 of `min_n` and values between 1 and 5 of `mtry` have higher AUC.
+
+```{r}
+rf_res_auc %>%
+  collect_metrics() %>%
+  select(mean, min_n, mtry) %>%
+  pivot_longer(min_n:mtry,
+    values_to = "value",
+    names_to = "parameter"
+  ) %>%
+  ggplot(aes(value, mean, color = parameter)) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~parameter, scales = "free_x") +
+  labs(x = NULL, y = "AUC")
+```
+
+Use above ranges of values for hyperparameters.
+
+```{r}
+rf_grid_auc <- grid_regular(
+  mtry(range = c(1,5)),
+  min_n(range = c(15, 35)),
+  levels = 5
+)
+
+rf_grid_auc
+```
+
+Tune again with the defined ranges of values for hyperparameters.
+
+```{r}
+set.seed(456)
+rf_res_auc2 <- tune_grid(
+  rf_wf,
+  resamples = folds,
+  grid = rf_grid_auc,
+  control = control_grid(save_pred = TRUE)
+)
+
+```
+
+Set grid = 20 to automatically chooose 20 grid points for tuning. Save predictions from the validation set via `control_grid()` function. The chosen performance metric is accuracy.
+
+```{r}
+rf_res_acc <- 
+  rf_wf %>% 
+  tune_grid(resamples = folds,
+            grid = 20,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(accuracy))
+```
+
+It seems like values between 25 and 40 of `min_n` and values between 1 and 5 of `mtry` have higher accuracy.
+
+```{r}
+rf_res_acc %>%
+  collect_metrics() %>%
+  select(mean, min_n, mtry) %>%
+  pivot_longer(min_n:mtry,
+    values_to = "value",
+    names_to = "parameter"
+  ) %>%
+  ggplot(aes(value, mean, color = parameter)) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~parameter, scales = "free_x") +
+  labs(x = NULL, y = "accuracy")
+```
+
+Use above ranges of values for hyperparameters.
+
+```{r}
+rf_grid_acc <- grid_regular(
+  mtry(range = c(1, 5)),
+  min_n(range = c(25, 40)),
+  levels = 5
+)
+
+rf_grid_acc
+```
+
+Tune again with the defined ranges of values for hyperparameters.
+
+```{r}
+set.seed(456)
+rf_res_acc2 <- tune_grid(
+  rf_wf,
+  resamples = folds,
+  grid = rf_grid_acc,
+  control = control_grid(save_pred = TRUE)
+)
+
+```
+
+## Performance Estimation for Training Data
+
+The [`show_best()`](https://tune.tidymodels.org/reference/show_best.html) function shows us the top 10 models based on the AUC-ROC from validation sets.
+
+```{r}
+rf_top_auc <- rf_res_auc2 %>% 
+  show_best("roc_auc", n = 10) 
+rf_top_auc
+```
+
+Use `select_best()` function to extract values for `mtry` and `min_n` that maximize AUC-ROC of the validation sets.
+
+```{r}
+rf_best_auc <-
+  rf_res_auc2 %>% 
+  select_best("roc_auc") 
+rf_best_auc
+```
+
+Compute predicted class probabilities for `No` and `Yes` with `collect_predictions()` function. Then, create ROC curve using `roc_curve()` .Filter prediction for best random forest model. Create a column, `model` with value "Random Forest". Plot the ROC Curve with `autoplot()` function.
+
+```{r}
+rf_plot_auc <- 
+  rf_res_auc2 %>% 
+  collect_predictions(parameters = rf_best_auc) %>% 
+  roc_curve(is_grave_accident, .pred_No) %>% 
+  mutate(model = "Random Forest")
+autoplot(rf_plot_auc)
+```
+
+The [`show_best()`](https://tune.tidymodels.org/reference/show_best.html) function shows us the top 10 models based on the accuracy from validation sets.
+
+```{r}
+rf_top_acc <-
+  rf_res_acc2 %>% 
+  show_best("accuracy", n = 10) 
+rf_top_acc
+```
+
+Use `select_best()` function to extract values for `mtry` and `min_n` that maximize accuracy of the validation set.
+
+```{r}
+rf_best_acc <- 
+  rf_res_acc2 %>% 
+  select_best("accuracy")
+rf_best_acc
+```
+
+### Build a eXtreme Gradient Boosting Model
+
+Build the model, eXtreme Gradient Boosting, `xgb` by specifying the model: `boost_tree(trees = 1000, tree_depth = tune(), min_n = tune(), loss_reduction = tune(), sample_size = tune(), mtry = tune(),  learn_rate = tune())`. The hyperparameters, `tree_depth`, `min_n` , `loss_reduction` , `sample_size`, `mtry` and `learn_rate` would be tuned for the best prediction using training data. Boosted tree is similar to random forest but instead of selecting subset of data by equal chance, it is more likely to select previously misclassiffied subset of data. The method for fitting or training the model is set_engine("xgboost") , which fits a model that creates a collection of independent decision trees. The engine is set to be classification mode.
+
+```{r}
+xgb <- boost_tree(
+  trees = 1000,
+  tree_depth = tune(), min_n = tune(),
+  loss_reduction = tune(),                     # first three: model complexity
+  sample_size = tune(), mtry = tune(),         # randomness
+  learn_rate = tune()                          # step size
+) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+```
+
+### Fit eXtreme Gradient Boosting Model with a Recipe
+
+The eXtreme Gradient Boosting model is then paired with formula with the `workflows` package and called the eXtreme Gradient Boosting workflow, `xgb_wf`.
+
+```{r}
+xgb_wf <- workflow() %>%
+  add_formula(is_grave_accident ~ .) %>%
+  add_model(xgb) 
+```
+
+### Model Tuning with a Grid
+
+Use a space-filling design for tuning.
+
+```{r}
+xgb_grid <- grid_latin_hypercube(
+  tree_depth(),
+  min_n(),
+  loss_reduction(),
+  sample_size = sample_prop(),
+  finalize(mtry(), data_train),
+  learn_rate(),
+  size = 30
+)
+```
+
+Use `tune_grid()` from `tune` package to train the models. Save predictions from the validation set via `control_grid()` function. The chosen performance metric is AUC-ROC.
+
+```{r}
+doParallel::registerDoParallel()
+
+set.seed(234)
+xgb_res_auc <- tune_grid(
+  xgb_wf,
+  resamples = folds,
+  grid = xgb_grid,
+  control = control_grid(save_pred = TRUE),
+  metrics = metric_set(roc_auc))
+```
+
+Use `tune_grid()` from `tune` package to train the models. Save predictions from the validation set via `control_grid()` function. The chosen performance metric is accuracy.
+
+```{r}
+xgb_res_acc <- 
+  xgb_wf %>% 
+  tune_grid(resamples = folds,
+            grid = xgb_grid,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(accuracy))
+```
+
+## Performance Estimation for Training Data
+
+The [`show_best()`](https://tune.tidymodels.org/reference/show_best.html) function shows us the top 10 models based on the AUC-ROC from validation sets.
+
+```{r}
+xgb_top_auc <-
+  xgb_res_auc %>% 
+  show_best("roc_auc", n = 10) 
+xgb_top_auc
+```
+
+Use `select_best()` function to extract values for hyperparamters that maximize AUC-ROC of the validation sets.
+
+```{r}
+xgb_best_auc <- 
+  xgb_res_auc %>%
+  select_best("roc_auc")
+xgb_best_auc
+```
+
+Compute predicted class probabilities for `No` and `Yes` with `collect_predictions()` function. Then, create ROC curve using `roc_curve()` . Create a column, `model` with value "eXtreme Gradient Boosting". Plot the ROC Curve with `autoplot()` function.
+
+```{r}
+xgb_plot_auc <- 
+  xgb_res_auc %>% 
+  collect_predictions(parameters = xgb_best_auc) %>% 
+  roc_curve(is_grave_accident, .pred_No) %>% 
+  mutate(model = "eXtreme Gradient Boosting")
+autoplot(xgb_plot_auc)
+```
+
+The [`show_best()`](https://tune.tidymodels.org/reference/show_best.html) function shows us the top 10 models based on the accuracy from validation sets.
+
+```{r}
+xgb_top_acc <-
+  xgb_res_acc %>% 
+  show_best("accuracy", n = 10) 
+xgb_top_acc
+```
+
+Use `select_best()` function to extract values for `mtry` and `min_n` that maximize accuracy of the validation sets.
+
+```{r}
+xgb_best_acc <- 
+  xgb_res_acc %>% 
+  select_best("accuracy")
+xgb_best_acc
+```
+
+### The AUC-ROC for Training Data
+
+```{r}
+bind_rows(lr_plot_auc,plr_plot_auc,dt_plot_auc,rf_plot_auc,xgb_plot_auc) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity, col = model)) + 
+  geom_path(linewidth = 0.5, alpha = 0.8) +
+  geom_abline(lty = 3) + 
+  coord_equal() + 
+  scale_color_viridis_d(option = "plasma", end = 0.95)
+```
+
+### The AUC for Training Data
+
+```{r}
+model_train <- c("logistic regression",  
+                 "penalized logistic regression", 
+                 "decision tree", 
+                 "random forest",
+                 "eXtreme Gradient Boosting")
+
+auc_train <- c(lr_best_auc$mean,
+                    plr_top_auc[1,]$mean,
+                    dt_top_auc[1,]$mean,
+                    rf_top_auc[1,]$mean,
+                    xgb_top_auc[1,]$mean)
+
+auc_train_c <- data.frame(model_train,auc_train)
+auc_train_c
+```
+
+eXtreme Gradient Boosting seems to perform the best in term of AUC and it is chosen to predict the testing data.
+
+### The Accuracy for Training Data
+
+```{r}
+model_train <- c("logistic regression",  
+           "gradient descent in logistic regression",
+           "penalized logistic regression", 
+           "decision tree", 
+           "random forest",
+           "eXtreme Gradient Boosting")
+
+accuracy_train <- c(lr_best_acc$mean,
+                    lr_gd_best_acc,
+                    plr_best_acc$mean, 
+                    dt_best_acc$mean, 
+                    rf_best_acc$mean,
+                    xgb_best_acc$mean)
+
+accuracy_train_c <- data.frame(model_train,accuracy_train)
+accuracy_train_c
+```
+
+Gradient descent in logistic regression and random forest seem to perform the best in term of accuracy and is chosen for prediction for the competition which awards based on highest accuracy.
+
+### Finalizing the Models
+
+#### Logistic Regression
+
+Finalize workflow object, `lr_wf` with values from `select_best()`. Fit the final model to training data and estimate model performance based on AUC with testing data via `last_fit(data_split)`. Based on AUC, compute predicted class probabilities for `No` and `Yes` with `collect_predictions()` function. Then, create ROC curve using `roc_curve()` . Create a column, `model` with value "Logistic Regression". Plot the ROC Curve with `autoplot()` function.
+
+```{r}
+lr_wf_final_auc <- 
+  lr_wf %>% 
+  finalize_workflow(lr_best_auc)
+
+lr_final_fit_auc <-  lr_wf_final_auc %>% 
+                     last_fit(data_split)
+lr_plot_auc2 <- 
+  lr_final_fit_auc %>% 
+  collect_predictions(parameters = lr_best_auc) %>% 
+  roc_curve(is_grave_accident, .pred_No) %>% 
+  mutate(model = "Logistic Regression")
+autoplot(lr_plot_auc2)
+```
+
+The `collect_metrics()` function shows us the the AUC from test set
+
+```{r}
+lr_best_auc2 <- lr_final_fit_auc %>% 
+                collect_metrics() 
+
+lr_best_auc2 <- lr_best_auc2[-1,]
+lr_best_auc2 
+```
+
+Finalize workflow object, `lr_wf` with values from `select_best()`. Fit the final model to training data and estimate model performance based on accuracy with testing data via `last_fit(data_split)`.
+
+```{r}
+lr_wf_final_acc <- 
+  lr_wf %>% 
+  finalize_workflow(lr_best_acc)
+
+lr_final_fit_acc <-  lr_wf_final_acc %>% 
+                 last_fit(data_split)
+```
+
+The `collect_metrics()` function shows us the the accuracy from test set
+
+```{r}
+lr_best_acc2 <- lr_final_fit_acc %>% 
+                collect_metrics() 
+
+lr_best_acc2 <- lr_best_acc2[1,]
+lr_best_acc2
+```
+
+#### Gradient Descent in Logistic Regression
+
+Make predictions on test data. The accuracy is 82.6%.
+
+```{r}
+lr_gd_res2 <- sigmoid(x_test %*% weight)
+lr_gd_res2 <- c(lr_gd_res2)
+lr_gd_best_acc2 <- mean(round(lr_gd_res2) == y_test)
+lr_gd_best_acc2
+```
+
+#### Penalized Logistic Regression
+
+Finalize workflow object, `plr_wf` with values from `select_best()`. Fit the final model to training data and estimate model performance based on AUC with testing data via `last_fit(data_split)`. Based on AUC, compute predicted class probabilities for `No` and `Yes` with `collect_predictions()` function and filter the predictions with best penalized logistic regression model. Then, create ROC curve using `roc_curve()` . Create a column, `model` with value "Penalized Logistic Regression". Plot the ROC Curve with `autoplot()` function.
+
+```{r}
+plr_wf_final_auc <- 
+  plr_wf %>% 
+  finalize_workflow(plr_best_auc)
+
+plr_final_fit_auc <-  plr_wf_final_auc %>% 
+                 last_fit(data_split)
+plr_plot_auc2 <- 
+  plr_final_fit_auc%>% 
+  collect_predictions(parameters = plr_best_auc) %>% 
+  roc_curve(is_grave_accident, .pred_No) %>% 
+  mutate(model = "Penalized Logistic Regression")
+autoplot(plr_plot_auc2)
+```
+
+The `collect_metrics()` function shows us the the AUC-ROC from test set
+
+```{r}
+plr_best_auc2 <- plr_final_fit_auc %>% 
+                 collect_metrics()
+
+plr_best_auc2 <- plr_best_auc2[-1,]
+plr_best_auc2 
+```
+
+Finalize workflow object, `plr_wf` with values from `select_best()`. Fit the final model to training data and estimate model performance based on accuracy with testing data via `last_fit(data_split)`.
+
+```{r}
+plr_wf_final_acc <- 
+  plr_wf %>% 
+  finalize_workflow(plr_best_acc)
+
+plr_final_fit_acc <-  plr_wf_final_acc %>% 
+                      last_fit(data_split)
+```
+
+The `collect_metrics()` function shows us the the accuracy from test set
+
+```{r}
+plr_best_acc2 <- plr_final_fit_acc %>% 
+                 collect_metrics()
+
+plr_best_acc2 <- plr_best_acc2[1,]
+plr_best_acc2 
+```
+
+#### Decision Tree
+
+Finalize workflow object, `dt_wf` with values from `select_best()`. Fit the final model to training data and estimate model performance based on AUC with testing data via `last_fit(data_split)`. Based on AUC, compute predicted class probabilities for `No` and `Yes` with `collect_predictions()` function and filter the prediction for the best decision tree model. Then, create ROC curve using `roc_curve()` . Create a column, `model` with value "Decision Tree". Plot the ROC Curve with `autoplot()` function.
+
+```{r}
+dt_wf_final_auc <- 
+  dt_wf %>% 
+  finalize_workflow(dt_best_auc)
+
+dt_final_fit_auc <-  dt_wf_final_auc %>% 
+                 last_fit(data_split)
+dt_plot_auc2 <- 
+  dt_final_fit_auc %>% 
+  collect_predictions(parameters = dt_best_auc) %>% 
+  roc_curve(is_grave_accident, .pred_No) %>% 
+  mutate(model = "Decision Tree")
+autoplot(dt_plot_auc2)
+```
+
+The `collect_metrics()` function shows us the the AUC-ROC from test set
+
+```{r}
+dt_best_auc2 <- dt_final_fit_auc %>% 
+                collect_metrics()
+
+dt_best_auc2 <- dt_best_auc2[-1,]
+dt_best_auc2
+```
+
+Visualize decision tree with `rpart` package.
+
+Decision tree is visualized to understand the factors that lead to accident gravity, i.e. `is_grave_accident` = Yes. However, since the AUC is not great at 52.6%, the interpretation can only be served for exploration purpose.
+
+The 1st number in the root node illustrates the percentage of "No" for `is_grave_accident` in the entire training data, which is 17%. The 2nd number in the root node demonstrates the proportion of selected "No" for `is_grave_accident` in the training data, which is 100% i.e. all the "No" in the training data is selected. The darker the node in blue, the higher the proportion of selected "No' for `is_grave_accident`.
+
+At the 1st split point, the tree splits at `number_of_vehicles` \>=1.5. 90% of the "No" has `number_of_vehicles` larger than or equal to 1.5 and assigned to the left leaf node. 10% of the "No" has `number_of_vehicles` smaller than 1.5 and assigned to the right decision node. It seems like when there are less vehicles involved in an accident, it would lead to accident gravity.
+
+At the 2nd split point, the tree splits at `CriScore` \< 1.3. 9% of the "No" has `CriScore` small than 1.3 and assigned to the left leaf node. 1% of the "No" has `CriScore` larger than 1.3 and assigned to the right decision node. It seems like when the `CriScore` is higher, there is a higher chance of accident gravity.
+
+At the 3rd split point, the tree splits at `month` = 1,3,4,6,7,9,11. About 1% of the "No" happened during these months and assigned to the left decision node. Close to 0% of the "No" happened during the other months and assigned to the right decision node. It seems like if month is not 1,3,4,6,7,9 and 11, there is a higher chance of accident gravity.
+
+At the 4th split point at `CriScore` \>= 1.4 and 5th split point at `CriScore` \< 1.5 , the proportion of No is close to 0%, and does not seem to be useful for interpretation.
+
+```{r}
+dt_viz <- extract_workflow(dt_final_fit_auc)
+dt_viz  %>%
+  extract_fit_engine() %>%
+  rpart.plot(roundint = FALSE)
+```
+
+Finalize workflow object, `dt_wf` with values from `select_best()`. Fit the final model to training data and estimate model performance based on accuracy with testing data via `last_fit(data_split)`.
+
+```{r}
+dt_wf_final_acc <- 
+  dt_wf %>% 
+  finalize_workflow(dt_best_acc)
+
+dt_final_fit_acc <-  dt_wf_final_acc %>% 
+                 last_fit(data_split)
+```
+
+The `collect_metrics()` function shows us the the accuracy from test set
+
+```{r}
+dt_best_acc2 <- dt_final_fit_acc %>% 
+                show_best("accuracy")
+dt_best_acc2
+```
+
+#### Random Forest
+
+Finalize workflow object, `rf_wf` with values from `select_best()`. Fit the final model to training data and estimate model performance based on AUC with testing data via `last_fit(data_split)`. Based on AUC, compute predicted class probabilities for `No` and `Yes` with `collect_predictions()` function and filter the prediction for the best random forest model. Then, create ROC curve using `roc_curve()` . Create a column, `model` with value "Random Forest". Plot the ROC Curve with `autoplot()` function.
+
+```{r}
+rf_wf_final_auc <- 
+  rf_wf %>% 
+  finalize_workflow(rf_best_auc)
+
+rf_final_fit_auc <-  rf_wf_final_auc %>% 
+                 last_fit(data_split)
+rf_plot_auc2 <- 
+  rf_final_fit_auc %>% 
+  collect_predictions(parameters = rf_best_auc) %>% 
+  roc_curve(is_grave_accident, .pred_No) %>% 
+  mutate(model = "Random Forest")
+autoplot(rf_plot_auc2)
+```
+
+The `collect_metrics()` function shows us the the AUC-ROC from test set
+
+```{r}
+rf_best_auc2 <- rf_final_fit_auc %>% 
+                collect_metrics()
+
+rf_best_auc2 <- rf_best_auc2[-1,]
+rf_best_auc2
+```
+
+Finalize workflow object, `rf_wf` with values from `select_best()`. Fit the final model to training data and estimate model performance based on accuracy with testing data via `last_fit(data_split)`.
+
+```{r}
+rf_wf_final_acc <- 
+  rf_wf %>% 
+  finalize_workflow(rf_best_acc)
+
+rf_final_fit_acc <-  rf_wf_final_acc %>% 
+                 last_fit(data_split)
+```
+
+The `collect_metrics()` function shows us the the accuracy from test set
+
+```{r}
+rf_best_acc2 <- rf_final_fit_acc %>% 
+                collect_metrics()
+
+rf_best_acc2 <- rf_best_acc2[1,]
+rf_best_acc2
+```
+
+#### eXtreme Gradient Boosting
+
+Finalize workflow object, `xgb_wf` with values from `select_best()`. Fit the final model to training data and estimate model performance based on AUC with testing data via `last_fit(data_split)`. Based on AUC, compute predicted class probabilities for `No` and `Yes` with `collect_predictions()` function and filter the prediction for the best eXtreme Gradient Boosting model,Then, create ROC curve using `roc_curve()` . Create a column, `model` with value "eXtreme Gradient Boosting". Plot the ROC Curve with `autoplot()` function.
+
+```{r}
+xgb_wf_final_auc <- 
+  xgb_wf %>% 
+  finalize_workflow(xgb_best_auc)
+
+xgb_final_fit_auc <-  xgb_wf_final_auc %>% 
+                 last_fit(data_split)
+xgb_plot_auc2 <- 
+  xgb_res_auc %>% 
+  collect_predictions(parameters = xgb_best_auc) %>% 
+  roc_curve(is_grave_accident, .pred_No) %>% 
+  mutate(model = "exTreme Gradient Boosting")
+autoplot(xgb_plot_auc2)
+```
+
+The `show_best()` function shows us the the top AUC-ROC from test set. Select the best AUC-ROC from test set.
+
+```{r}
+xgb_best_auc2 <- xgb_res_auc %>% 
+                show_best("roc_auc")
+
+xgb_best_auc2 <- xgb_best_auc2[1,]
+xgb_best_auc2 
+```
+
+Finalize workflow object, `xgb_wf` with values from `select_best()`. Fit the final model to training data and estimate model performance based on accuracy with testing data via `last_fit(data_split)`.
+
+```{r}
+xgb_wf_final_acc <- 
+  xgb_wf %>% 
+  finalize_workflow(xgb_best_acc)
+
+xgb_final_fit_acc <-  xgb_wf_final_acc %>% last_fit(data_split)
+```
+
+The `show_best()` function shows us the the top accuracy from test set. Select the best accuracy from test set.
+
+```{r}
+xgb_best_acc2 <- xgb_res_acc %>% 
+                show_best("accuracy")
+
+xgb_best_acc2 <- xgb_best_acc2[1,]
+xgb_best_acc2 
+```
+
+### The AUC-ROC for Testing Data
+
+```{r}
+bind_rows(lr_plot_auc2,plr_plot_auc2,dt_plot_auc2,rf_plot_auc2,xgb_plot_auc2) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity, col = model)) + 
+  geom_path(linewidth = 0.5, alpha = 0.8) +
+  geom_abline(lty = 3) + 
+  coord_equal() + 
+  scale_color_viridis_d(option = "plasma", end = 0.95)
+```
+
+### The AUC for Testing Data
+
+```{r}
+model_test <- c("logistic regression",  
+                "penalized logistic regression", 
+                "decision tree", 
+                "random forest",
+                "eXtreme Gradient Boosting")
+
+auc_test <- c(lr_best_auc2$.estimate,
+              plr_best_auc2$.estimate,
+              dt_best_auc2$.estimate,
+              rf_best_auc2$.estimate,
+              xgb_best_auc2$mean)
+
+auc_test_c <- data.frame(model_test,auc_test)
+auc_test_c
+```
+
+The performance in term of AUC-ROC for train and validation set is similar, which suggest the model is not overfitting. However, due to the poor performance, the model might be underfitting.
+
+### The Accuracy for Testing Data
+
+```{r}
+model_test <- c("logistic regression",  
+           "gradient descent in logistic regression",
+           "penalized logistic regression", 
+           "decision tree", 
+           "random forest",
+           "eXtreme Gradient Boosting")
+
+accuracy_test <- c(lr_best_acc2$.estimate,
+              lr_gd_best_acc2,
+              plr_best_acc2$.estimate, 
+              dt_best_acc2$mean, 
+              rf_best_acc2$.estimate,
+              xgb_best_acc2$mean)
+
+accuracy_test_c <- data.frame(model_test,accuracy_test)
+accuracy_test_c
+```
+
+The performance in term of AUC-ROC for train and validation set is similar, which suggest the model is not overfitting.
